@@ -1,11 +1,10 @@
 const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
+const routes = require('./routes');
 
-// Basic route to test the server
-app.get('/', (req, res) => {
-  res.send('Hello, this is your Google Drive Analyzer server!');
-});
+// Use the routes defined in routes.js
+app.use('/', routes);
 
 // Start the server
 app.listen(port, () => {
