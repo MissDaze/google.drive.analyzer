@@ -1,54 +1,61 @@
 const express = require('express');
 const { google } = require('googleapis');
-const dotenv = require('dotenv');
 const fs = require('fs');
+const path = require('path');
+const dotenv = require('dotenv');
 
-// Load environment variables
+// Load environment variables from .env file
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-// Google OAuth2 setup
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.REDIRECT_URI
-);
+// Middleware
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json());
 
-// Load saved tokens if they exist
-if (fs.existsSync('tokens.json')) {
-  const tokens = JSON.parse(fs.readFileSync('tokens.json', 'utf8'));
+// Google Drive API Setup
+const clientId = process.env.CLIENT_ID; // Pulling from .env
+const clientSecret = process.env.CLIENT_SECRET; // Pulling from .env
+const redirectUri = 'http://localhost:3000/callback'; // Ensure this matches your registered redirect URI
+const scopes = ['https://www.googleapis.com/auth/drive']; // Full access to Drive
+
+const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+const drive = google.drive({ version: 'v3', auth: oauth2Client });
+
+// Check for saved tokens
+const TOKEN_PATH = path.join(__dirname, 'tokens.json');
+if (fs.existsSync(TOKEN_PATH)) {
+  const tokens = JSON.parse(fs.readFileSync(TOKEN_PATH, 'utf8'));
   oauth2Client.setCredentials(tokens);
-  console.log('Loaded saved tokens.');
 }
 
-// Scopes for Google Drive access (read-only for now)
-const scopes = ['https://www.googleapis.com/auth/drive.readonly'];
+// Google Gemini API Setup
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-lite' });
 
-// Route to start OAuth flow
+// Routes
+// Authentication route for Google Drive
 app.get('/auth', (req, res) => {
-  console.log('Auth route accessed');
-  const url = oauth2Client.generateAuthUrl({
+  const authUrl = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: scopes,
   });
-  res.redirect(url);
+  res.redirect(authUrl);
 });
 
-// Callback route after user authorizes
-app.get('/oauth2callback', async (req, res) => {
+// Callback route after Google authentication
+app.get('/callback', async (req, res) => {
   const code = req.query.code;
   if (code) {
     try {
       const { tokens } = await oauth2Client.getToken(code);
       oauth2Client.setCredentials(tokens);
-      // Save tokens to a file for simplicity
-      fs.writeFileSync('tokens.json', JSON.stringify(tokens, null, 2));
-      console.log('Tokens saved:', tokens);
-      res.send('Authentication successful! Tokens saved. You can close this tab.');
+      fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
+      res.send('Authentication successful! You can close this window and return to the app.');
     } catch (error) {
-      console.error('Error retrieving tokens:', error);
+      console.error('Error retrieving access token:', error);
       res.status(500).send('Authentication failed.');
     }
   } else {
@@ -56,37 +63,64 @@ app.get('/oauth2callback', async (req, res) => {
   }
 });
 
-// Basic home route
+// Serve the main frontend page
 app.get('/', (req, res) => {
-  res.send('Welcome to Google Drive Analyzer. Go to <a href="/auth">Authenticate</a> to connect your Drive or <a href="/files">View Files</a>.');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Route to list files from Google Drive
+// List Google Drive files (for display or API use)
 app.get('/files', async (req, res) => {
   try {
-    const drive = google.drive({ version: 'v3', auth: oauth2Client });
     const response = await drive.files.list({
-      pageSize: 10, // Limit to 10 files for now
+      pageSize: 10,
       fields: 'nextPageToken, files(id, name, mimeType, modifiedTime)',
     });
     const files = response.data.files;
-    if (files.length) {
-      let fileList = '<h2>Your Google Drive Files:</h2><ul>';
-      files.forEach(file => {
-        fileList += `<li>${file.name} (Type: ${file.mimeType}, Last Modified: ${file.modifiedTime})</li>`;
-      });
-      fileList += '</ul>';
-      res.send(fileList);
-    } else {
-      res.send('No files found in your Google Drive.');
-    }
+    let html = '<h1>Google Drive Files</h1><ul>';
+    files.forEach(file => {
+      html += `<li>${file.name} (Type: ${file.mimeType}, Last Modified: ${file.modifiedTime})
+        <a href="/download/${file.id}">Download</a></li>`;
+    });
+    html += '</ul>';
+    res.send(html);
   } catch (error) {
-    console.error('Error fetching files:', error);
-    res.status(500).send('Error fetching files from Google Drive. Ensure authentication is complete.');
+    console.error('Error listing files:', error);
+    res.status(500).send('Error listing files');
+  }
+});
+
+// Download a specific file
+app.get('/download/:fileId', async (req, res) => {
+  try {
+    const fileId = req.params.fileId;
+    const fileMeta = await drive.files.get({ fileId });
+    res.setHeader('Content-Disposition', `attachment; filename="${fileMeta.data.name}"`);
+    const response = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' });
+    response.data.pipe(res);
+  } catch (error) {
+    console.error('Error downloading file:', error);
+    res.status(500).send('Error downloading file');
+  }
+});
+
+// API endpoint to handle user commands with Gemini AI
+app.post('/api/command', async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) {
+    return res.status(400).json({ error: 'No prompt provided.' });
+  }
+  try {
+    const result = await model.generateContent(prompt);
+    const aiResponse = result.response.text();
+    // Placeholder logic - later, we'll map AI response to Drive API actions
+    res.json({ message: `AI Response: ${aiResponse}` });
+  } catch (error) {
+    console.error('Error processing command with Gemini API:', error);
+    res.status(500).json({ error: 'Failed to process command.' });
   }
 });
 
 // Start the server
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });
