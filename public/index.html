@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Drive Analyzer</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        #commandInput { width: 100%; padding: 10px; margin-bottom: 10px; }
+        #response { margin-top: 20px; border: 1px solid #ccc; padding: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Google Drive Analyzer</h1>
+    <p><a href="/auth">Authenticate with Google Drive</a></p>
+    <p><a href="/files">View Files</a></p>
+    <input type="text" id="commandInput" placeholder="Enter command for AI (e.g., list recent files)">
+    <button onclick="sendCommand()">Send</button>
+    <div id="response"></div>
+
+    <script>
+        async function sendCommand() {
+            const input = document.getElementById('commandInput').value;
+            const responseDiv = document.getElementById('response');
+            try {
+                const response = await fetch('/api/command', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: input })
+                });
+                const data = await response.json();
+                responseDiv.innerText = data.message || data.error;
+            } catch (error) {
+                responseDiv.innerText = 'Error sending command.';
+            }
+        }
+    </script>
+</body>
+</html>
